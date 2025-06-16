@@ -1,0 +1,1080 @@
+Description: Deploy PetStore App backend infrastructure
+
+Parameters:
+  CognitoCallbackURL:
+    Type: String
+  PetStoreWebAppURL:
+    Type: String
+  WebAppFunctionARN:
+    Type: String
+
+Outputs:
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID
+    Value: !GetAtt CognitoUserPool.UserPoolId
+  CognitoClientId:
+    Description: Cognito Client ID
+    Value: !GetAtt CognitoUserPoolClient.ClientId
+  CognitoClientSecret:
+    Description: Cognito Client Secret
+    Value: !GetAtt CognitoUserPoolClient.ClientSecret
+  PetStoreAPI:
+    Description: PetStore API Gateway Endpoint
+    Value: !Join
+      - ''
+      - - https://
+        - !Ref PetStoreApi
+        - !Sub .execute-api.${AWS::Region}.amazonaws.com
+        - /
+        - !Ref PetStoreApiStage
+        - /
+  DynamoDBTable:
+    Description: DynamoDB Table ARN
+    Value: !GetAtt DynamoDBTable.Arn
+
+Resources:
+
+  #
+  # Cognito Lambdas - PreTokenGeneration & PreSignUp
+  #
+
+  CognitoLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CognitoLambdaRole
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  CognitoPreTokenGeneration:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: Cognito-PreTokenGeneration-Lambda
+      Role: !GetAtt CognitoLambdaRole.Arn
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            console.info("EVENT\n" + JSON.stringify(event, null, 2))
+            // Processing user group info
+            const userGroup = event.request.groupConfiguration.groupsToOverride;
+
+            // Add claims for identity pool role mapping
+            let claimsToOverride = {};
+            if (userGroup.includes('manager')) {
+              claimsToOverride['custom:role'] = 'manager';
+            } else if (userGroup.includes('customer')) {
+              claimsToOverride['custom:role'] = 'customer';
+            }
+
+            event.response = {
+              "claimsAndScopeOverrideDetails": {
+                "idTokenGeneration": {
+                  "claimsToAddOrOverride": claimsToOverride
+                },
+                "accessTokenGeneration": {
+                  "claimsToAddOrOverride": claimsToOverride,
+                  "scopesToAdd": userGroup
+                }
+              }
+            };
+            // Return to Amazon Cognito
+            return event;
+          };
+      Handler: index.handler
+      MemorySize: 256
+      Runtime: nodejs20.x
+      Timeout: 30
+      LoggingConfig:
+        LogGroup: /aws/lambda/PreTokenGeneration
+
+  CognitoPreSignUp:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: Cognito-PreSignUp-Lambda
+      Role: !GetAtt CognitoLambdaRole.Arn
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            console.info("EVENT\n" + JSON.stringify(event, null, 2))
+            // Confirm the user
+            event.response.autoConfirmUser = true;
+            // Set the email as verified if it is in the request
+            if (Object.hasOwn(event.request.userAttributes, "email")) {
+              event.response.autoVerifyEmail = true;
+            }
+            // Set the phone number as verified if it is in the request
+            if (Object.hasOwn(event.request.userAttributes, "phone_number")) {
+              event.response.autoVerifyPhone = true;
+            }
+            return event;
+          };
+      Handler: index.handler
+      MemorySize: 256
+      Runtime: nodejs20.x
+      Timeout: 30
+      LoggingConfig:
+        LogGroup: /aws/lambda/PreTokenGeneration
+    DependsOn:
+      - CognitoLambdaRole
+
+  #
+  # Cognito User Pool
+  #
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      # UserPoolTier: "ESSENTIALS|PLUS"
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      # AutoVerifiedAttributes:
+      #   - email
+      DeletionProtection: INACTIVE
+      EmailConfiguration:
+        EmailSendingAccount: COGNITO_DEFAULT
+      MfaConfiguration: 'OFF'
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: false
+          RequireNumbers: false
+          RequireSymbols: false
+          RequireUppercase: false
+      UserPoolName: App-Auth-Workshop
+      Schema:
+        - Name: StoreManager
+          AttributeDataType: String
+          Mutable: true
+        - Name: email
+          Required: true
+      UsernameConfiguration:
+        CaseSensitive: false
+      LambdaConfig:
+        PreSignUp: !GetAtt CognitoPreSignUp.Arn
+        PreTokenGeneration: !GetAtt CognitoPreTokenGeneration.Arn
+    DependsOn:
+      - CognitoPreTokenGeneration
+      - CognitoPreSignUp
+
+  CognitoUserPoolResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      Identifier: PetStoreApi
+      Name: PetStore App API Scope
+      UserPoolId: !Ref CognitoUserPool
+      Scopes:
+        - ScopeName: Read
+          ScopeDescription: Read access to PetStore API
+    DependsOn:
+      - CognitoUserPool
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: PetStoreApp
+      SupportedIdentityProviders:
+        - COGNITO
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - profile
+        - email
+        - openid
+        - !Join
+          - ''
+          - - !Ref CognitoUserPoolResourceServer
+            - /Read
+      CallbackURLs:
+        - !ImportValue CognitoCallbackURL
+        - !ImportValue PetStoreWebAppURL
+      LogoutURLs:
+        - !ImportValue PetStoreWebAppURL
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: true
+      AccessTokenValidity: 24
+      IdTokenValidity: 24
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+    DependsOn:
+      - CognitoUserPool
+      - CognitoUserPoolResourceServer
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      Domain: !Join
+        - ''
+        - - app-auth-
+          - !Ref AWS::AccountId
+      ManagedLoginVersion: 2
+    DependsOn:
+      - CognitoUserPool
+
+  CognitoManagedLogin:
+    Type: AWS::Cognito::ManagedLoginBranding
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      ClientId: !GetAtt CognitoUserPoolClient.ClientId
+      UseCognitoProvidedValues: true
+    DependsOn:
+      - CognitoUserPool
+      - CognitoUserPoolClient
+  
+  # Create Cognito User Groups
+  ManagerUserGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: manager
+      UserPoolId: !Ref CognitoUserPool
+    DependsOn:
+      - CognitoUserPool
+
+  CustomerUserGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: customer
+      UserPoolId: !Ref CognitoUserPool
+    DependsOn:
+      - CognitoUserPool
+
+  #
+  # Assign Cognito permission to invoke Lambdas
+  #
+
+  CognitoPreTokenGenerationPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt CognitoPreTokenGeneration.Arn
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt CognitoUserPool.Arn
+    DependsOn:
+      - CognitoPreTokenGeneration
+      - CognitoUserPool
+
+  CognitoPreSignUpPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt CognitoPreSignUp.Arn
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt CognitoUserPool.Arn
+    DependsOn:
+      - CognitoPreSignUp
+      - CognitoUserPool
+
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      TableName: PetStoreTable
+      KeySchema:
+        - AttributeName: petId
+          KeyType: HASH
+      AttributeDefinitions:
+        - AttributeName: petId
+          AttributeType: N
+
+  PopulateDynamoDBRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+
+  PopulateDynamoDBLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: Populate-DynamoDB
+      ReservedConcurrentExecutions: 1
+      Role: !GetAtt PopulateDynamoDBRole.Arn
+      Runtime: nodejs20.x
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DynamoDBTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+          const { DynamoDBDocumentClient, PutCommand } = require("@aws-sdk/lib-dynamodb");
+          var response = require('cfn-response');
+
+          const client = new DynamoDBClient({});
+          const ddbDocClient = DynamoDBDocumentClient.from(client);
+
+          exports.handler = async (event, context) => {
+              console.log('REQUEST RECEIVED:\n', JSON.stringify(event));
+
+              // Handle DELETE event for proper stack deletion
+              if (event.RequestType === 'Delete') {
+                  console.log('DELETE request - sending success response');
+                  await response.send(event, context, response.SUCCESS, {});
+                  return;
+              }
+
+              // Handle CREATE and UPDATE events
+              try {
+                  const tableName = process.env.TABLE_NAME;
+                  const itemToAdd = [
+                      { "petId": 1, "price": 249.99, "type": "dog", "name": "Buddy" },
+                      { "petId": 2, "price": 199.99, "type": "cat", "name": "Whiskers" },
+                      { "petId": 3, "price": 99.99, "type": "fish", "name": "Nemo" },
+                      { "petId": 4, "price": 149.99, "type": "bird", "name": "Tweety" },
+                      { "petId": 5, "price": 299.99, "type": "dog", "name": "Max" }
+                  ];
+
+                  const putItemPromise = itemToAdd.map((item) => {
+                      console.log(item);
+                      const params = {
+                          TableName: tableName,
+                          Item: item,
+                          ConditionExpression: 'attribute_not_exists(petId)'
+                      };
+                      const command = new PutCommand(params);
+                      return ddbDocClient.send(command);
+                  });
+
+                  await Promise.all(putItemPromise).then(res => console.log(res)).catch(err => console.log(err));
+
+                  const responseData = { Result: 'Items added successfully' };
+                  await response.send(event, context, response.SUCCESS, responseData);
+              }
+              catch (error) {
+                  console.log(error);
+                  const responseData = { Error: 'Something went wrong' };
+                  await response.send(event, context, response.FAILED, responseData);
+              }
+          };
+      Handler: index.handler
+      MemorySize: 256
+      Timeout: 30
+
+  PopulateDynamoDBInvoke:
+    Type: Custom::InvokePopulateDynamoDBFunction
+    Properties:
+      ServiceToken: !GetAtt PopulateDynamoDBLambda.Arn
+    DependsOn:
+      - PopulateDynamoDBLambda
+      - DynamoDBTable
+
+  LambdaCRUDDynamoDBRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+
+  LambdaCRUDDynamoDB:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: crud-function-DynamoDB
+      ReservedConcurrentExecutions: 1
+      Role: !GetAtt LambdaCRUDDynamoDBRole.Arn
+      Runtime: nodejs20.x
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DynamoDBTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+          const { DynamoDBDocumentClient, ScanCommand, PutCommand, GetCommand, DeleteCommand } = require("@aws-sdk/lib-dynamodb");
+
+          const client = new DynamoDBClient({});
+          const ddbDocClient = DynamoDBDocumentClient.from(client);
+          const tableName = process.env.TABLE_NAME;
+
+          exports.handler = async (event, context) => {
+            const routeKey = event["httpMethod"] + " " + event["resource"];
+            let output;
+
+            let body;
+            let statusCode = 200;
+            const headers = {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+              "Access-Control-Allow-Credentials": true,
+              "Access-Control-Allow-Methods": "OPTIONS,POST,GET,DELETE"
+            };
+
+            try {
+              switch (routeKey) {
+                case "DELETE /pets/{id}":
+                  await ddbDocClient.send(
+                    new DeleteCommand({
+                      TableName: tableName,
+                      Key: {
+                        petId: Number(event.pathParameters.id)
+                      },
+                    })
+                  );
+                  output = `Deleted pet ${event.pathParameters.id}`;
+                  break;
+                case "POST /pets":
+                  let requestJSON = JSON.parse(event.body);
+                  await ddbDocClient.send(
+                    new PutCommand({
+                      TableName: tableName,
+                      Item: {
+                        petId: requestJSON.id,
+                        price: requestJSON.price,
+                        type: requestJSON.type,
+                        name: requestJSON.name
+                      },
+                    })
+                  );
+                  output = `Successfully created Pet ID ${requestJSON.id}`;
+                  break;
+                case "GET /pets": 
+                  body = await ddbDocClient.send(
+                    new ScanCommand({
+                      TableName: tableName
+                    })
+                  );
+                  output = body.Items;
+                  break;
+                case "GET /pets/{id}": 
+                  body = await ddbDocClient.send(
+                    new GetCommand({
+                      TableName: tableName,
+                      Key: {
+                        petId: Number(event.pathParameters.id)
+                      }
+                    })
+                  );
+                  output = body.Item;
+                  break;
+                default:
+                  throw new Error(`Unsupported route: "${routeKey}"`);
+              }
+            }
+            catch (err) {
+              statusCode = 400;
+              output = err.message;
+            }
+            finally {
+              output_json = JSON.stringify(output);
+            }
+            console.log(output);
+
+            return {
+              statusCode,
+              body: output_json,
+              headers
+            };
+          }
+      Handler: index.handler
+      MemorySize: 256
+      Timeout: 30
+
+  PetStoreApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: PetStoreApi
+      Description: PetStore API
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # Allow API Gateway to Invoke Lambda CRUD function
+  PetStoreApiInvokeLambdaCRUD:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt LambdaCRUDDynamoDB.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PetStoreApi}/*/*
+
+  PetStoreApiCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  PetStoreApiAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt PetStoreApiCloudWatchRole.Arn
+
+  PetStoreApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref PetStoreApi
+      Description: PetStore API
+    DependsOn:
+      - PetsOPTIONS
+      - PetsGET
+      - PetsPOST
+      - PetsIdGET
+      - PetsIdOPTIONS
+      - PetsIdDELETE
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+
+
+  PetStoreApiLog:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/${PetStoreApi}
+      RetentionInDays: 7
+    DependsOn:
+      - PetStoreApi
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Delete
+
+  PetStoreApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      AccessLogSetting:
+        DestinationArn: !GetAtt PetStoreApiLog.Arn
+        Format: '{"requestId":"$context.requestId","userAgent":"$context.identity.userAgent","caller":"$context.identity.caller","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength"}'
+      MethodSettings:
+        - DataTraceEnabled: true
+          HttpMethod: '*'
+          LoggingLevel: INFO
+          ResourcePath: /*
+      DeploymentId: !Ref PetStoreApiDeployment
+      RestApiId: !Ref PetStoreApi
+      StageName: prod
+
+  Pets:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt PetStoreApi.RootResourceId
+      PathPart: pets
+      RestApiId: !Ref PetStoreApi
+
+  PetsOPTIONS:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: '''Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Amz-User-Agent'''
+              method.response.header.Access-Control-Allow-Origin: '''*'''
+              method.response.header.Access-Control-Allow-Methods: '''*'''
+            StatusCode: '204'
+        RequestTemplates:
+          application/json: '{ statusCode: 200 }'
+        Type: MOCK
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Methods: true
+          StatusCode: '204'
+      ResourceId: !Ref Pets
+      RestApiId: !Ref PetStoreApi
+
+  PetsGET:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayCognitoAuthorizer
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaCRUDDynamoDB.Arn}/invocations"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+      ResourceId: !Ref Pets
+      RestApiId: !Ref PetStoreApi
+
+  PetsPOST:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: POST
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayCognitoAuthorizer
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaCRUDDynamoDB.Arn}/invocations"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+      ResourceId: !Ref Pets
+      RestApiId: !Ref PetStoreApi
+
+  PetsId:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref Pets
+      PathPart: '{id}'
+      RestApiId: !Ref PetStoreApi
+
+  PetsIdGET:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayCognitoAuthorizer
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaCRUDDynamoDB.Arn}/invocations"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+      ResourceId: !Ref PetsId
+      RestApiId: !Ref PetStoreApi
+
+  PetsIdOPTIONS:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: '''Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Amz-User-Agent'''
+              method.response.header.Access-Control-Allow-Origin: '''*'''
+              method.response.header.Access-Control-Allow-Methods: '''*'''
+            StatusCode: '204'
+        RequestTemplates:
+          application/json: '{ statusCode: 200 }'
+        Type: MOCK
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Methods: true
+          StatusCode: '204'
+      ResourceId: !Ref PetsId
+      RestApiId: !Ref PetStoreApi
+
+  PetsIdDELETE:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: DELETE
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayCognitoAuthorizer
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaCRUDDynamoDB.Arn}/invocations"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+      ResourceId: !Ref PetsId
+      RestApiId: !Ref PetStoreApi
+
+  SetWebAppEnvironmentVariableRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: '2012-10-17'
+      Policies:
+        - PolicyName: AllowLambdaFunctionUpdate
+          PolicyDocument:
+            Statement:
+              - Action: lambda:UpdateFunctionConfiguration
+                Effect: Allow
+                Resource:
+                  - !ImportValue WebAppFunctionARN
+            Version: '2012-10-17'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  SetWebAppEnvironmentVariableLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: Set-WebApp-EnvironmentVariable
+      ReservedConcurrentExecutions: 1
+      Role: !GetAtt SetWebAppEnvironmentVariableRole.Arn
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 30
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          const { LambdaClient, UpdateFunctionConfigurationCommand } = require("@aws-sdk/client-lambda");
+          const client = new LambdaClient({});
+          var response = require('cfn-response');
+
+          exports.handler = async (event, context) => {
+            console.log('REQUEST RECEIVED:\n', JSON.stringify(event));
+            
+            // Handle DELETE event for proper stack deletion
+            if (event.RequestType === 'Delete') {
+              console.log('DELETE request - sending success response');
+              await response.send(event, context, response.SUCCESS, {});
+              return;
+            }
+            
+            // Handle CREATE and UPDATE events
+            try {
+              const input = {
+                FunctionName: event.ResourceProperties['WebAppFunctionARN'],
+                Environment: {
+                  Variables: {
+                    "AWS_LAMBDA_EXEC_WRAPPER": "/opt/bootstrap",
+                    "AWS_LWA_ENABLE_COMPRESSION": "true",
+                    "RUST_LOG": "info",
+                    "PORT": "8000",
+                    "NEXTAUTH_URL": event.ResourceProperties['NEXTAUTH_URL'],
+                    "NEXTAUTH_SECRET": "3b9Jylh2e/t7buxoKH3r+euGdeFEkbUxQtUgp4gpUY4=",
+                    "COGNITO_USERPOOL_ID": event.ResourceProperties['COGNITO_USERPOOL_ID'],
+                    "COGNITO_CLIENT_ID": event.ResourceProperties['COGNITO_CLIENT_ID'],
+                    "COGNITO_CLIENT_SECRET": event.ResourceProperties['COGNITO_CLIENT_SECRET'],
+                    "COGNITO_ISSUER": event.ResourceProperties['COGNITO_ISSUER'],
+                    "COGNITO_TENANT_URL": event.ResourceProperties['COGNITO_TENANT_URL'],
+                    "PETS_API_BASE_URL": event.ResourceProperties['PETS_API_BASE_URL']
+                  }
+                }
+              };
+
+              const updateCommand = new UpdateFunctionConfigurationCommand(input);
+              const updateResponse = await client.send(updateCommand);
+
+              const responseData = { Result: 'Environment variables updated successfully' };
+              await response.send(event, context, response.SUCCESS, responseData);
+            }
+            catch (error) {
+              console.log(error);
+              const responseData = { Error: 'Something went wrong' };
+              await response.send(event, context, response.FAILED, responseData);
+            }
+          };
+
+  SetWebAppEnvironmentVariable:
+    Type: Custom::SetWebAppEnvironmentVariable
+    Properties:
+      ServiceToken: !GetAtt SetWebAppEnvironmentVariableLambda.Arn
+      WebAppFunctionARN: !ImportValue WebAppFunctionARN
+      NEXTAUTH_URL: !ImportValue PetStoreWebAppURL
+      COGNITO_USERPOOL_ID: !GetAtt CognitoUserPool.UserPoolId
+      COGNITO_CLIENT_ID: !GetAtt CognitoUserPoolClient.ClientId
+      COGNITO_CLIENT_SECRET: !GetAtt CognitoUserPoolClient.ClientSecret
+      COGNITO_ISSUER: !Join
+        - ''
+        - - https://cognito-idp.
+          - !Ref AWS::Region
+          - .amazonaws.com/
+          - !Ref CognitoUserPool
+      COGNITO_TENANT_URL: !Join
+        - ''
+        - - https://
+          - !Ref CognitoUserPoolDomain
+          - .auth.
+          - !Ref AWS::Region
+          - .amazoncognito.com
+      PETS_API_BASE_URL: !Join
+        - ''
+        - - https://
+          - !Ref PetStoreApi
+          - !Sub .execute-api.${AWS::Region}.amazonaws.com
+          - /
+          - !Ref PetStoreApiStage
+          - /
+    DependsOn:
+      - SetWebAppEnvironmentVariableLambda
+      - CognitoUserPool
+      - CognitoUserPoolDomain
+      - PetStoreApi
+      - PetStoreApiStage
+
+  CognitoAuthorizerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: '2012-10-17'
+      
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonDynamoDBReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonCognitoReadOnly
+
+  CognitoAuthorizerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: "Lambda authorizer for pet store using Cognito"
+      Environment: 
+        Variables: 
+          TABLE_NAME: !Ref DynamoDBTable
+      FunctionName: "Cognito-LambdaAuthorizer"
+      Handler: "index.handler"
+      Architectures: 
+        - "x86_64"
+      Code:
+        ZipFile: |
+          async function handler(event, context) {
+            try {
+              // Check if Authorization header exists
+              let bearerToken = event.headers?.Authorization || event.headers?.authorization;
+              if (!bearerToken) {
+                console.log('No Authorization header found');
+                return generatePolicy('user', 'Deny', event.methodArn);
+              }
+              
+              // Extract token from Bearer format
+              if (bearerToken.toLowerCase().startsWith('bearer ')) {
+                bearerToken = bearerToken.split(' ')[1];
+              }
+
+              // Parse the JWT token to get user information
+              const tokenParts = bearerToken.split('.');
+              if (tokenParts.length !== 3) {
+                console.log('Invalid token format');
+                return generatePolicy('user', 'Deny', event.methodArn);
+              }
+              
+              const payload = tokenParts[1];
+              const decodedPayload = Buffer.from(payload, 'base64').toString('utf8');
+              const parsedToken = JSON.parse(decodedPayload);
+              
+              // Extract user groups
+              const userGroups = parsedToken['cognito:groups'] || [];
+              
+              // Get the action being performed
+              const httpMethod = event.requestContext?.httpMethod?.toLowerCase() || '';
+              const resourcePath = event.requestContext?.resourcePath || '';
+              const actionId = `${httpMethod} ${resourcePath}`;
+
+              console.log('User groups:', userGroups);
+              console.log('Action ID:', actionId);
+
+              // Determine if user has permission based on their group
+              let isAllowed = false;
+
+              // Manager group has full access
+              if (userGroups.includes('manager')) {
+                isAllowed = true;
+                console.log('User is a manager, allowing access');
+              } 
+              // Customer group has read-only access
+              else if (userGroups.includes('customer')) {
+                isAllowed = httpMethod === 'get';
+                console.log('User is a customer, ' + (isAllowed ? 'allowing' : 'denying') + ' access');
+              } else {
+                console.log('User has no recognized groups, denying access');
+              }
+
+              // Generate policy document
+              const principalId = parsedToken.sub || 'user';
+              return generatePolicy(principalId, isAllowed ? 'Allow' : 'Deny', event.methodArn);
+            } catch (e) {
+              console.log('Error processing request:', e);
+              return generatePolicy('user', 'Deny', event.methodArn);
+            }
+          }
+
+          function generatePolicy(principalId, effect, resource) {
+            console.log(`Generating policy for ${principalId} with effect ${effect} for resource ${resource}`);
+            return {
+              principalId,
+              policyDocument: {
+                Version: '2012-10-17',
+                Statement: [
+                  {
+                    Action: 'execute-api:Invoke',
+                    Effect: effect,
+                    Resource: resource
+                  }
+                ]
+              }
+            };
+          }
+
+          module.exports = {
+            handler,
+          };
+      Role: !GetAtt CognitoAuthorizerLambdaRole.Arn
+      Runtime: nodejs20.x
+      Timeout: 30
+      MemorySize: 256
+
+  ApiGatewayCognitoAuthorizer:
+        Type: AWS::ApiGateway::Authorizer
+        Properties:
+            RestApiId: !Ref PetStoreApi
+            Type: "REQUEST"  
+            AuthorizerUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:Cognito-LambdaAuthorizer/invocations"
+            Name: CognitoAuthorizer
+            IdentitySource: method.request.header.Authorization
+            AuthorizerResultTtlInSeconds: 0
+
+  PetStoreApiInvokeAuthorizerLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CognitoAuthorizerLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PetStoreApi}/*/*
+
+  CognitoIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: PetStoreIdentityPool
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref CognitoUserPoolClient
+          ProviderName: !GetAtt CognitoUserPool.ProviderName
+          ServerSideTokenCheck: true
+
+  CustomerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'cognito-identity.amazonaws.com:aud': !Ref CognitoIdentityPool
+              'ForAnyValue:StringLike':
+                'cognito-identity.amazonaws.com:amr': authenticated
+      Policies:
+        - PolicyName: CustomerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !GetAtt DynamoDBTable.Arn
+
+  ManagerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'cognito-identity.amazonaws.com:aud': !Ref CognitoIdentityPool
+              'ForAnyValue:StringLike':
+                'cognito-identity.amazonaws.com:amr': authenticated
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+    
+  CognitoPreTokenGeneration:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: Cognito-PreTokenGeneration-Lambda
+      Role: !GetAtt CognitoLambdaRole.Arn
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            console.info("EVENT\n" + JSON.stringify(event, null, 2))
+            // Processing user group info
+            const userGroup = event.request.groupConfiguration.groupsToOverride;
+
+            // Add claims for identity pool role mapping
+            let claimsToOverride = {};
+            if (userGroup.includes('manager')) {
+              claimsToOverride['custom:role'] = 'manager';
+            } else if (userGroup.includes('customer')) {
+              claimsToOverride['custom:role'] = 'customer';
+            }
+
+            event.response = {
+              "claimsAndScopeOverrideDetails": {
+                "idTokenGeneration": {
+                  "claimsToAddOrOverride": claimsToOverride
+                },
+                "accessTokenGeneration": {
+                  "claimsToAddOrOverride": claimsToOverride,
+                  "scopesToAdd": userGroup
+                }
+              }
+            };
+            // Return to Amazon Cognito
+            return event;
+          };
+      Handler: index.handler
+      MemorySize: 256
+      Runtime: nodejs20.x
+      Timeout: 30
+      LoggingConfig:
+        LogGroup: /aws/lambda/PreTokenGeneration
+
+  IdentityPoolRoleMapping:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref CognitoIdentityPool
+      Roles:
+        authenticated: !GetAtt CustomerRole.Arn
+        unauthenticated: !Ref AWS::NoValue
+  

@@ -1,0 +1,29 @@
+{
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev",
+    "start": "next start"
+  },
+  "dependencies": {
+    "aws-jwt-verify": "^4.0.1",
+    "lucide-react": "^0.439.0",
+    "next": "^15.0.3",
+    "next-auth": "^4.24.7",
+    "pretty-print-json": "^3.0.2",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "react-jwt": "^1.2.2"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "22.5.4",
+    "@types/react": "18.3.5",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.45",
+    "tailwindcss": "^3.4.10",
+    "typescript": "5.5.4"
+  }
+}

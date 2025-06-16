@@ -1,0 +1,40 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Main template for PetStore Application - Deploys frontend and backend stacks'
+
+Resources:
+  # Frontend Stack - Deploys the Next.js application with Cognito integration
+  FrontendStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./frontend/template.yaml
+      TimeoutInMinutes: 30
+
+  # Backend Stack - Deploys the API, DynamoDB, and Cognito resources
+  # This stack depends on outputs from the frontend stack
+  BackendStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./backend/backend-stack.yaml
+      TimeoutInMinutes: 30
+      Parameters:
+        CognitoCallbackURL: !GetAtt FrontendStack.Outputs.CognitoCallbackURL
+        PetStoreWebAppURL: !GetAtt FrontendStack.Outputs.PetStoreWebAppURL
+        WebAppFunctionARN: !GetAtt FrontendStack.Outputs.WebAppFunctionARN
+    DependsOn: FrontendStack
+
+Outputs:
+  PetStoreWebAppURL:
+    Description: PetStore Web App URL
+    Value: !GetAtt FrontendStack.Outputs.PetStoreWebAppURL
+  
+  PetStoreAPI:
+    Description: PetStore API Gateway Endpoint
+    Value: !GetAtt BackendStack.Outputs.PetStoreAPI
+  
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID
+    Value: !GetAtt BackendStack.Outputs.CognitoUserPoolId
+  
+  CognitoClientId:
+    Description: Cognito Client ID
+    Value: !GetAtt BackendStack.Outputs.CognitoClientId

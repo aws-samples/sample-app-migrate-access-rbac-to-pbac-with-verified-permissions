@@ -1,0 +1,123 @@
+{
+    "PetStoreApi": {
+        "entityTypes": {
+            "User": {
+                "memberOfTypes": [
+                    "UserGroup"
+                ],
+                "shape": {
+                    "type": "Record",
+                    "attributes": {
+                      
+                        "custom:store": {
+                            "type": "String",
+                            "required": false
+                        }
+                    }
+                }
+            },
+            "UserGroup": {
+                "shape": {
+                    "attributes": {},
+                    "type": "Record"
+                }
+            },
+            "Application": {
+                "shape": {
+                    "attributes": {},
+                    "type": "Record"
+                }
+            },
+            "store": {
+                "memberOfTypes": [],
+                "shape": {
+                    "type": "Record",
+                    "attributes": {
+                        "storeId": {
+                            "type": "String",
+                            "required": true
+                        }
+                    }
+                }
+            },
+            "pet": {
+                "memberOfTypes": [],
+                "shape": {
+                    "type": "Record",
+                    "attributes": {
+                        "storeId": {
+                            "type": "String",
+                            "required": true
+                        },
+                        "type": {
+                            "type": "String",
+                            "required": true
+                        }
+                    }
+                }
+            }
+        },
+        "actions": {
+            "get /stores/{storeid}/pets": {
+                "memberOf": [],
+                "appliesTo": {
+                    "context": {
+                        "type": "Record",
+                        "attributes": {}
+                    },
+                    "principalTypes": [
+                        "User"
+                    ],
+                    "resourceTypes": [
+                        "store"
+                    ]
+                }
+            },
+            "post /stores/{storeid}/pets": {
+                "memberOf": [],
+                "appliesTo": {
+                    "context": {
+                        "type": "Record",
+                        "attributes": {}
+                    },
+                    "principalTypes": [
+                        "User"
+                    ],
+                    "resourceTypes": [
+                        "store"
+                    ]
+                }
+            },
+            "get /stores/{storeid}/pets/{id}": {
+                "memberOf": [],
+                "appliesTo": {
+                    "context": {
+                        "type": "Record",
+                        "attributes": {}
+                    },
+                    "principalTypes": [
+                        "User"
+                    ],
+                    "resourceTypes": [
+                        "pet"
+                    ]
+                }
+            },
+            "delete /stores/{storeid}/pets/{id}": {
+                "memberOf": [],
+                "appliesTo": {
+                    "context": {
+                        "type": "Record",
+                        "attributes": {}
+                    },
+                    "principalTypes": [
+                        "User"
+                    ],
+                    "resourceTypes": [
+                        "pet"
+                    ]
+                }
+            }
+        }
+    }
+}

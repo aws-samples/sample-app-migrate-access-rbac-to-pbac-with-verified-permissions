@@ -1,0 +1,69 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform:
+- AWS::LanguageExtensions
+- AWS::Serverless-2016-10-31
+Description: 'SAM template for PetStore App frontend'
+Globals:
+  Function:
+    Timeout: 10
+Resources:
+  CognitoFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./package/frontend-package.zip
+      MemorySize: 256
+      Handler: run.sh
+      Runtime: nodejs20.x
+      Architectures:
+      - x86_64
+      Environment:
+        Variables:
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
+          AWS_LWA_ENABLE_COMPRESSION: true
+          RUST_LOG: info
+          PORT: '8000'
+          NEXTAUTH_URL: ''
+          NEXTAUTH_SECRET: 3b9Jylh2e/t7buxoKH3r+euGdeFEkbUxQtUgp4gpUY4=
+          COGNITO_USERPOOL_ID: ''
+          COGNITO_CLIENT_ID: ''
+          COGNITO_CLIENT_SECRET: ''
+          COGNITO_ISSUER: ''
+          COGNITO_LOGOUT_URL: ''
+          PETS_API_BASE_URL: ''
+      Layers:
+      - Fn::Sub: arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:23
+      Events:
+        RootEvent:
+          Type: HttpApi
+          Properties:
+            Path: /
+            Method: any
+        ProxyEvent:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: any
+    Metadata:
+      BuildMethod: makefile
+      SamResourceId: CognitoFunction
+Outputs:
+  PetStoreWebAppURL:
+    Description: PetStore Web App URL
+    Value:
+      Fn::Sub: https://${ServerlessHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/
+    Export:
+      Name: PetStoreWebAppURL
+  CognitoCallbackURL:
+    Description: Cognito Callback URL
+    Value:
+      Fn::Sub: https://${ServerlessHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/api/auth/callback/cognito
+    Export:
+      Name: CognitoCallbackURL
+  WebAppFunctionARN:
+    Description: WebApp Lambda Function ARN
+    Value:
+      Fn::GetAtt:
+      - CognitoFunction
+      - Arn
+    Export:
+      Name: WebAppFunctionARN

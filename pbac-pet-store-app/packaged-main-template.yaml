@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Main template for PetStore Application - Deploys frontend and backend
+  stacks
+Resources:
+  FrontendStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.us-east-2.amazonaws.com/petstore-pbac-us-east-2-675736623488/petstore-app-1750097542/3fac543123890ddcdb568f3cb3f26fd8.template
+      TimeoutInMinutes: 30
+  BackendStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.us-east-2.amazonaws.com/petstore-pbac-us-east-2-675736623488/petstore-app-1750097542/7cf06b6b1bd2f494d91c7b47d9b10eac.template
+      TimeoutInMinutes: 30
+      Parameters:
+        CognitoCallbackURL:
+          Fn::GetAtt:
+          - FrontendStack
+          - Outputs.CognitoCallbackURL
+        PetStoreWebAppURL:
+          Fn::GetAtt:
+          - FrontendStack
+          - Outputs.PetStoreWebAppURL
+        WebAppFunctionARN:
+          Fn::GetAtt:
+          - FrontendStack
+          - Outputs.WebAppFunctionARN
+    DependsOn: FrontendStack
+Outputs:
+  PetStoreWebAppURL:
+    Description: PetStore Web App URL
+    Value:
+      Fn::GetAtt:
+      - FrontendStack
+      - Outputs.PetStoreWebAppURL
+  PetStoreAPI:
+    Description: PetStore API Gateway Endpoint
+    Value:
+      Fn::GetAtt:
+      - BackendStack
+      - Outputs.PetStoreAPI
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID
+    Value:
+      Fn::GetAtt:
+      - BackendStack
+      - Outputs.CognitoUserPoolId
+  CognitoClientId:
+    Description: Cognito Client ID
+    Value:
+      Fn::GetAtt:
+      - BackendStack
+      - Outputs.CognitoClientId
