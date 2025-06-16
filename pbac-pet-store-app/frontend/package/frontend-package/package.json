@@ -8,7 +8,7 @@
   "dependencies": {
     "aws-jwt-verify": "^4.0.1",
     "lucide-react": "^0.439.0",
-    "next": "^15.0.3",
+    "next": "^15.3.3",
     "next-auth": "^4.24.7",
     "pretty-print-json": "^3.0.2",
     "react": "18.2.0",
