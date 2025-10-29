@@ -9,7 +9,7 @@
     "aws-jwt-verify": "^4.0.1",
     "lucide-react": "^0.439.0",
     "next": "^15.0.3",
-    "next-auth": "^4.24.7",
+    "next-auth": "^4.24.12",
     "pretty-print-json": "^3.0.2",
     "react": "18.2.0",
     "react-dom": "18.2.0",
